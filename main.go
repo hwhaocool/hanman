@@ -144,6 +144,7 @@ func main() {
 						Visible: true,
 						Children: []Widget{
 							Label{Text: "漫画下载器" + Version},
+							Label{Text: "下载：有的网站会限流，会导致失败；失败的图片不会保存；重新下载即可（多次下载的时候遇到磁盘已有文件就跳过）"},
 							TextEdit{
 								Text: "项目地址: https://github.com/hwhaocool/hanman\r\n" +
 									"支持解析 www.tuwenhanman.com\r\n" +
@@ -163,7 +164,7 @@ func main() {
 func aboutAction_Triggered() {
 	walk.MsgBox(nil,
 		"提示",
-		"An example that demonstrates a main window that supports multiple pages.",
+		"漫画下载器, enjoy it~",
 		walk.MsgBoxOK|walk.MsgBoxIconInformation)
 }
 func tips() {
