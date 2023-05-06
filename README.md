@@ -9,6 +9,8 @@
 - https://www.tuwenhanman.com
 - https://bingmh.com
 
+界面截图
+![example](example.png)
 
 ## 打包 exe
 
