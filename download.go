@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"math/rand"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,7 +23,9 @@ type Download struct {
 	globalClient *req.Client
 	wg           sync.WaitGroup
 	failCount    int
+	successCount int
 	stopFlag     bool
+	myweb        MyWeb
 }
 
 func NewDownload(url string, path string, proxy string, out *walk.TextEdit) *Download {
@@ -43,19 +44,26 @@ func NewDownload(url string, path string, proxy string, out *walk.TextEdit) *Dow
 
 func (x *Download) Start(ch chan bool) {
 
-	x.task()
+	ret := x.task()
+	if !ret {
+		ch <- false
+		return
+	}
 
 	x.log("done")
 
 	if x.failCount > 0 {
 
-		x.log(fmt.Sprintf("失败数量:%d", x.failCount))
 		x.log("重试1次")
 
 		if !x.stopFlag {
+			x.failCount = 0
 			x.task()
+
 		}
 	}
+
+	x.log(fmt.Sprintf("成功下载图片数量:%d, 失败数量:%d", x.successCount, x.failCount))
 
 	ch <- true
 
@@ -73,6 +81,17 @@ func (x *Download) init() {
 		// resp.Dump() to get the dump content when needed in response
 		// middleware.
 		EnableDumpEachRequest().
+		OnBeforeRequest(func(client *req.Client, req *req.Request) error {
+
+			// 随机 andorid UA，避免 cf 限流
+			ua := fmt.Sprintf("Mozilla/5.0 (Linux; Android 4.4.2; Nexus 4 Build/KOT49H) AppleWebKit/%d.%d (KHTML, like Gecko) Chrome/112.0.0.0 Safari/%d.%d",
+				rand.Intn(50)+5, rand.Intn(50)+5, rand.Intn(50)+5, rand.Intn(50)+5)
+
+			// fmt.Println("ua,", ua)
+
+			req.SetHeader("user-agent", ua)
+			return nil
+		}).
 		OnAfterResponse(func(client *req.Client, resp *req.Response) error {
 			if resp.Err != nil { // Ignore when there is an underlying error, e.g. network error.
 				return nil
@@ -112,28 +131,36 @@ func (x *Download) log(str string) {
 	x.OutTE.AppendText(str + "\r\n")
 }
 
-func (x *Download) task() {
+func (x *Download) task() bool {
 
-	y, _ := url.Parse(x.Url)
+	if strings.Contains(x.Url, "tuwenhanman.com") {
+		fmt.Println("use TuWenHanMan")
+		x.myweb = TuWenHanMan{}
+
+	} else if strings.Contains(x.Url, "bingmh.com") {
+		fmt.Println("use Bingmh")
+		x.myweb = Bingmh{}
+	} else {
+		x.log("此网站暂未支持解析，请联系作者")
+		return false
+	}
 
 	// summary
-
 	err := x.crawl(x.Url, func(doc *goquery.Document) error {
 
-		name := doc.Find("h1.fed-part-eone.fed-font-xvi a").First().Text()
+		fmt.Println("crawl summary ok", x.Url)
+
+		name := x.myweb.ComicName(doc)
 
 		x.log("漫画名称:" + name)
 
-		doc.Find("a.fed-btns-info.fed-rims-info.fed-part-eone").Each(func(i int, s *goquery.Selection) {
-			href, _ := s.Attr("href")
+		ret := x.myweb.PageUrl(doc)
+		for i, onepage := range ret {
+			itemUrl := onepage.Url
+			title := onepage.Name
+			x.onePage(itemUrl, name, title, i)
+		}
 
-			itemUrl := y.Scheme + "://" + y.Host + href
-
-			// fmt.Println(itemUrl)
-
-			x.onePage(itemUrl, name, i)
-
-		})
 		return nil
 	})
 
@@ -142,9 +169,11 @@ func (x *Download) task() {
 	if err != nil {
 		x.log(fmt.Sprint(err))
 	}
+
+	return true
 }
 
-func (x *Download) onePage(url string, name string, chapter int) {
+func (x *Download) onePage(url string, name string, title string, chapter int) {
 
 	if x.stopFlag {
 		return
@@ -152,25 +181,19 @@ func (x *Download) onePage(url string, name string, chapter int) {
 
 	err := x.crawl(url, func(doc *goquery.Document) error {
 
-		title := doc.Find("h2").First().Text()
-
 		x.log("章节name: " + title)
 
-		doc.Find("img").Each(func(i int, s *goquery.Selection) {
+		ret := x.myweb.ImgList(doc)
+
+		for i, src := range ret {
 
 			if x.stopFlag {
-				return
+				break
 			}
 
-			src, _ := s.Attr("src")
-
-			if strings.HasPrefix(src, "http") {
-
-				x.wg.Add(1)
-				go x.download(src, name, title, chapter, i)
-			}
-
-		})
+			x.wg.Add(1)
+			go x.download(src, name, title, chapter, i)
+		}
 
 		return nil
 	})
@@ -189,7 +212,7 @@ func (x *Download) download(url string, name string, title string, chapter int, 
 	filename := fmt.Sprintf("%03d-%s-%03d%s", chapter, strings.ReplaceAll(title, " ", "_"), index, ext)
 
 	newPath := filepath.Join(x.Path, name, filename)
-	fmt.Println(newPath)
+	// fmt.Println(newPath)
 
 	dir := filepath.Dir(newPath)
 
@@ -202,12 +225,7 @@ func (x *Download) download(url string, name string, title string, chapter int, 
 	if os.IsNotExist(err) {
 		// File does not exist
 
-		// 随机UA，避免 cf 限流
-		ua := fmt.Sprintf("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/%d.%d (KHTML, like Gecko) Chrome/112.0.0.0 Safari/%d.%d",
-			rand.Intn(50)+5, rand.Intn(50)+5, rand.Intn(50)+5, rand.Intn(50)+5)
-
 		_, err = x.globalClient.R().SetOutputFile(newPath).
-			SetHeader("user-agent", ua).
 			Get(url)
 
 		if err != nil {
@@ -215,6 +233,8 @@ func (x *Download) download(url string, name string, title string, chapter int, 
 			os.Remove(newPath)
 
 			x.failCount++
+		} else {
+			x.successCount++
 		}
 	}
 
